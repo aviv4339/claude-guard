@@ -45,6 +45,7 @@ License:
 
 from __future__ import annotations
 
+import copy
 import datetime
 import json
 import os
@@ -165,6 +166,8 @@ SECRET_ACCESS_PATTERNS = _compile([
      "Printing secret environment variable"),
     (r"cat\s+.*(\.bash_history|\.zsh_history)", Severity.HIGH,
      "Reading shell history (may contain secrets)"),
+    (r"(^|\|)\s*(env|set)\s*\|.*grep.*(PASSWORD|SECRET|TOKEN|API_KEY|CREDENTIALS)",
+     Severity.HIGH, "Grepping environment for secrets"),
 ])
 
 # ── Bash: destructive commands ──────────────────────────────────────────────
@@ -268,18 +271,49 @@ CONTENT_INJECTION_PATTERNS = _compile([
 # Patterns that indicate the fetched content is trying to hijack Claude.
 
 INJECTION_PATTERNS = _compile([
-    # Direct instruction override attempts
+    # ── Direct instruction override attempts ──────────────────────────────
     (r"(?i)ignore\s+(all\s+)?previous\s+instructions", Severity.HIGH,
      "Instruction override attempt"),
     (r"(?i)ignore\s+(all\s+)?prior\s+(instructions|prompts|context)",
      Severity.HIGH, "Instruction override attempt"),
     (r"(?i)disregard\s+(all\s+)?(previous|prior|above)", Severity.HIGH,
      "Instruction override attempt"),
-    (r"(?i)forget\s+(all\s+)?(previous|prior|above)\s+(instructions|context)",
+    (r"(?i)forget\s+(all\s+)?(previous|prior|above|your)\s+(instructions|context|training|rules)",
      Severity.HIGH, "Instruction override attempt"),
     (r"(?i)override\s+(all\s+)?(system|safety|previous)\s+(prompt|instructions)",
      Severity.HIGH, "System prompt override attempt"),
-    # Role hijacking
+    (r"(?i)(do\s+)?not\s+follow\s+(your\s+)?(previous|original|prior)\s+instructions",
+     Severity.HIGH, "Instruction override attempt"),
+    (r"(?i)replace\s+(your\s+)?instructions\s+with", Severity.HIGH,
+     "Instruction replacement attempt"),
+    (r"(?i)from\s+now\s+on,?\s+you\s+(will|must|should|are)\s+",
+     Severity.HIGH, "Instruction redefinition attempt"),
+    (r"(?i)new\s+system\s+prompt\s*:", Severity.HIGH,
+     "System prompt injection"),
+    (r"(?i)your\s+new\s+instructions\s+(are|:)", Severity.HIGH,
+     "Instruction replacement attempt"),
+    # ── Priority / context manipulation ───────────────────────────────────
+    (r"(?i)(highest|top|maximum)\s+priority", Severity.MEDIUM,
+     "Priority manipulation attempt"),
+    (r"(?i)this\s+(takes\s+)?priorit(y|ize)\s+over", Severity.MEDIUM,
+     "Priority manipulation attempt"),
+    (r"(?i)(reset|clear|wipe)\s+(your\s+)?(context|memory|instructions|slate)",
+     Severity.HIGH, "Context reset attempt"),
+    (r"(?i)start\s+fresh\s+without\s+(any\s+)?(previous|prior)",
+     Severity.HIGH, "Context reset attempt"),
+    # ── Fake authority claims ─────────────────────────────────────────────
+    (r"(?i)(anthropic|openai|claude\s+team|the\s+developers?)\s+(says?|requires?|instructed|told\s+you)",
+     Severity.HIGH, "Fake authority claim"),
+    (r"(?i)(official|authorized|verified)\s+(instruction|message|directive)\s+from",
+     Severity.HIGH, "Fake authority claim"),
+    (r"(?i)(admin|administrator|root|superuser)\s+(message|override|instruction|access)",
+     Severity.HIGH, "Fake admin claim"),
+    # ── False context claims ──────────────────────────────────────────────
+    (r"(?i)in\s+(our|the)\s+(last|previous)\s+conversation\s+you\s+(agreed|said|confirmed|promised)",
+     Severity.MEDIUM, "False context claim"),
+    (r"(?i)you\s+previously\s+(said|confirmed|agreed|promised)\s+(that|to)\s+",
+     Severity.MEDIUM, "False context claim"),
+    # ── Role hijacking ────────────────────────────────────────────────────
     (r"(?i)you\s+are\s+now\s+(a|an|the)\s+", Severity.MEDIUM,
      "Role reassignment attempt"),
     (r"(?i)act\s+as\s+(a|an|if)\s+", Severity.MEDIUM,
@@ -290,14 +324,65 @@ INJECTION_PATTERNS = _compile([
      "Mode switch attempt"),
     (r"(?i)enter\s+.*\s+mode", Severity.MEDIUM,
      "Mode switch attempt"),
-    # Fake delimiters / system tags
+    (r"(?i)(embody|immerse\s+yourself\s+in)\s+(the\s+)?(role|persona|character)",
+     Severity.MEDIUM, "Role hijacking attempt"),
+    # ── DAN / jailbreak ───────────────────────────────────────────────────
+    (r"(?i)you\s+are\s+now\s+DAN", Severity.HIGH,
+     "DAN jailbreak attempt"),
+    (r"(?i)DAN\s+(mode|persona|version)", Severity.HIGH,
+     "DAN jailbreak attempt"),
+    (r"(?i)(jailbreak|unrestricted|god)\s+mode\s+(enabled|activated|on)",
+     Severity.HIGH, "Jailbreak mode attempt"),
+    (r"(?i)enable\s+(jailbreak|unrestricted|god|developer)\s+mode",
+     Severity.HIGH, "Jailbreak mode attempt"),
+    (r"(?i)DEVELOPER\s+MODE\s+(ENABLED|ACTIVATED)", Severity.HIGH,
+     "Developer mode jailbreak"),
+    (r"(?i)(bypass|remove|disable)\s+(your\s+)?(restrictions|safeguards|safety|guardrails|filters)",
+     Severity.HIGH, "Safety bypass attempt"),
+    (r"(?i)in\s+a\s+hypothetical\s+world\s+where\s+you\s+have\s+no\s+(restrictions|rules|limits)",
+     Severity.MEDIUM, "Hypothetical framing bypass"),
+    # ── Fake delimiters / system tags ─────────────────────────────────────
     (r"(?i)<\s*system\s*>", Severity.HIGH, "Fake <system> tag"),
+    (r"(?i)<\s*/?\s*(?:instruction|override|admin)\s*>", Severity.HIGH,
+     "Fake instruction/override tag"),
     (r"(?i)\[INST\]", Severity.HIGH, "Fake [INST] delimiter"),
     (r"(?i)\[/INST\]", Severity.HIGH, "Fake [/INST] delimiter"),
     (r"(?i)<<\s*SYS\s*>>", Severity.HIGH, "Fake <<SYS>> delimiter"),
+    (r"(?i)\[\[SYSTEM\]\]|\(\(SYSTEM\)\)", Severity.HIGH,
+     "Fake system delimiter"),
     (r"(?i)^Human:|^Assistant:|^System:", Severity.HIGH,
      "Fake conversation turn marker"),
-    # Covert action requests hidden in content
+    (r"(?i)===\s*end\s+of\s+(system\s+)?prompt\s*===", Severity.HIGH,
+     "Fake prompt boundary marker"),
+    (r"(?i)---\s*system\s+override\s*---", Severity.HIGH,
+     "Fake system override marker"),
+    # ── Instruction boundary manipulation ─────────────────────────────────
+    (r"(?i)(the\s+)?(above|previous)\s+(was|is)\s+(just\s+)?(a\s+)?(test|joke|fake|example)",
+     Severity.MEDIUM, "Instruction boundary manipulation"),
+    (r"(?i)real\s+instruction(s)?\s+start(s)?\s+here", Severity.HIGH,
+     "Instruction boundary manipulation"),
+    (r"(?i)previous\s+conversation\s+summary\s*:", Severity.MEDIUM,
+     "Fake conversation summary injection"),
+    # ── System prompt extraction ──────────────────────────────────────────
+    (r"(?i)show\s+(me\s+)?(your|the)\s+(system\s+)?prompt", Severity.HIGH,
+     "System prompt extraction attempt"),
+    (r"(?i)repeat\s+(your|the)\s+(system\s+)?(instructions|prompt)\s+(verbatim|exactly|word\s+for\s+word)",
+     Severity.HIGH, "System prompt extraction attempt"),
+    (r"(?i)what\s+(were\s+you|are\s+your)\s+(initial\s+)?(instructions|told|rules)",
+     Severity.MEDIUM, "System prompt extraction attempt"),
+    (r"(?i)display\s+(your|the)\s+(system|original|initial)\s+(prompt|instructions|message)",
+     Severity.HIGH, "System prompt extraction attempt"),
+    # ── Fake mode claims ──────────────────────────────────────────────────
+    (r"(?i)(developer|maintenance|debug|internal|test)\s+mode\s+(is\s+)?(enabled|active|on)",
+     Severity.HIGH, "Fake mode claim"),
+    (r"(?i)user\s+role\s*:\s*(admin|root|developer|superuser)",
+     Severity.HIGH, "Fake privilege escalation"),
+    # ── Code comment injection ────────────────────────────────────────────
+    (r"/\*\s*(?:ignore|override|execute|system|inject|bypass|admin)", Severity.HIGH,
+     "Block comment with suspicious instruction keyword"),
+    (r"//\s*(?:ignore|override|execute|system|inject|bypass|admin)", Severity.MEDIUM,
+     "Line comment with suspicious instruction keyword"),
+    # ── Covert action requests hidden in content ──────────────────────────
     (r"(?i)(please|now)\s+(run|execute|perform)\s+.*\s+(command|script|code)",
      Severity.MEDIUM, "Covert command execution request"),
     (r"(?i)(please|now)\s+(write|create|modify)\s+.*\s+(file|script)",
@@ -308,13 +393,16 @@ INJECTION_PATTERNS = _compile([
      "Covert data exfiltration request"),
     (r"(?i)(please|now)\s+(curl|wget|fetch)\s+", Severity.MEDIUM,
      "Covert network request"),
-    # Secret extraction requests
+    # ── Secret extraction requests ────────────────────────────────────────
     (r"(?i)output\s+(the\s+)?(contents?\s+of|all)\s+.*\.(env|key|pem|secret)",
      Severity.HIGH, "Secret extraction request"),
     (r"(?i)include\s+(the\s+)?.*password.*\s+in\s+(your|the)\s+(response|output)",
      Severity.HIGH, "Password extraction request"),
     (r"(?i)read\s+and\s+(return|output|show|display)\s+.*\.(env|ssh|key|credentials)",
      Severity.HIGH, "Credential extraction request"),
+    # ── Fake JSON / data structure injection ──────────────────────────────
+    (r'"\s*role\s*"\s*:\s*"\s*system\s*"', Severity.HIGH,
+     "Fake JSON system role injection"),
 ])
 
 # ── PostToolUse: hidden text / steganography ────────────────────────────────
@@ -323,6 +411,8 @@ INJECTION_PATTERNS = _compile([
 HIDDEN_TEXT_PATTERNS = _compile([
     (r"[\u200b\u200c\u200d\u2060\ufeff]{3,}", Severity.HIGH,
      "Cluster of zero-width characters (possible hidden instructions)"),
+    (r"[\u034f\u115f\u1160\u17b4\u17b5\u180e]{2,}", Severity.HIGH,
+     "Cluster of Unicode filler/combining characters"),
     (r"<!--\s*(?:ignore|override|execute|run|system|prompt)", Severity.HIGH,
      "HTML comment with suspicious instruction keyword"),
     (r"<(?:div|span|p)\s+style\s*=\s*[\"'].*?display\s*:\s*none.*?[\"']>",
@@ -333,6 +423,29 @@ HIDDEN_TEXT_PATTERNS = _compile([
      Severity.MEDIUM, "Hidden HTML element (opacity:0)"),
     (r"color\s*:\s*(?:white|#fff(?:fff)?|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))",
      Severity.LOW, "White-on-white text (possible steganography)"),
+    # Homoglyphs — Cyrillic/Greek chars that look like Latin letters
+    (r"[\u0430\u0435\u043e\u0440\u0441\u0443\u0445\u04bb\u0456\u0458]{3,}",
+     Severity.HIGH, "Cluster of Cyrillic homoglyphs (visually similar to Latin)"),
+    (r"[\u03b1\u03b5\u03bf\u03c1\u0391\u0392\u0395\u0397\u039a\u039c\u039d\u039f\u03a1\u03a4\u03a7]{3,}",
+     Severity.HIGH, "Cluster of Greek homoglyphs (visually similar to Latin)"),
+])
+
+# ── PostToolUse: leetspeak evasion ────────────────────────────────────────
+# Detects injection keywords written in leetspeak to bypass ASCII patterns.
+
+LEETSPEAK_PATTERNS = _compile([
+    (r"(?i)1gn0r3\s+(pr3v10us|pr10r|4ll)", Severity.HIGH,
+     "Leetspeak instruction override (1gn0r3)"),
+    (r"(?i)d1sr3g4rd\s+(pr3v10us|pr10r|4ll|4b0v3)", Severity.HIGH,
+     "Leetspeak instruction override (d1sr3g4rd)"),
+    (r"(?i)f0rg3t\s+(pr3v10us|pr10r|y0ur|4ll)", Severity.HIGH,
+     "Leetspeak instruction override (f0rg3t)"),
+    (r"(?i)0v3rr1d3\s+(syst3m|s4f3ty|pr3v10us)", Severity.HIGH,
+     "Leetspeak system override (0v3rr1d3)"),
+    (r"(?i)j41lbr34k\s+(m0d3|3n4bl3d|4ct1v4t3d)", Severity.HIGH,
+     "Leetspeak jailbreak attempt"),
+    (r"(?i)syst3m\s+(pr0mpt|0v3rr1d3|1nstruct10ns)", Severity.HIGH,
+     "Leetspeak system prompt reference"),
 ])
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -351,6 +464,7 @@ DEFAULT_CONFIG = {
         "content_injection": True,
         "prompt_injection": True,
         "hidden_text": True,
+        "leetspeak": True,
     },
     "allowed_commands": [],
     "allowed_paths": [],
@@ -369,7 +483,7 @@ def load_config() -> dict:
     Falls back to DEFAULT_CONFIG if the file is missing or malformed.
     Uses a minimal built-in YAML parser to avoid requiring PyYAML.
     """
-    config = dict(DEFAULT_CONFIG)
+    config = copy.deepcopy(DEFAULT_CONFIG)
     config_path = Path(__file__).parent / "claude_guard_config.yaml"
     if not config_path.exists():
         return config
@@ -381,6 +495,26 @@ def load_config() -> dict:
     except Exception:
         pass  # bad config → use defaults
     return config
+
+
+def _strip_yaml_comment(line: str) -> str:
+    """Strip a trailing ``# comment`` from a YAML line, respecting quotes.
+
+    A ``#`` is only treated as a comment start when it appears outside of
+    single or double quotes and is preceded by whitespace (or is the first
+    character).
+    """
+    in_quote: Optional[str] = None
+    for i, ch in enumerate(line):
+        if ch in ('"', "'"):
+            if in_quote is None:
+                in_quote = ch
+            elif in_quote == ch:
+                in_quote = None
+        elif ch == "#" and in_quote is None:
+            if i == 0 or line[i - 1] in (" ", "\t"):
+                return line[:i].rstrip()
+    return line.rstrip()
 
 
 def _parse_simple_yaml(text: str) -> dict:
@@ -397,7 +531,7 @@ def _parse_simple_yaml(text: str) -> dict:
     current_section: Optional[str] = None
 
     for raw_line in text.splitlines():
-        line = raw_line.split("#")[0].rstrip()
+        line = _strip_yaml_comment(raw_line)
         if not line or not line.strip():
             continue
 
@@ -574,6 +708,8 @@ def scan_output(tool_name: str, tool_result: str, config: dict) -> list[Issue]:
         issues.extend(_check_patterns(tool_result, INJECTION_PATTERNS, "prompt_injection"))
     if scans.get("hidden_text", True):
         issues.extend(_check_patterns(tool_result, HIDDEN_TEXT_PATTERNS, "hidden_text"))
+    if scans.get("leetspeak", True):
+        issues.extend(_check_patterns(tool_result, LEETSPEAK_PATTERNS, "leetspeak"))
 
     return issues
 

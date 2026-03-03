@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 .pytest_cache/
 claude_guard.log
+.claude/hooks/*.log
 *.egg-info/
 dist/
 build/

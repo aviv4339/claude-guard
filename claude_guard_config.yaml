@@ -35,8 +35,9 @@ scans:
   content_injection: true   # subprocess("curl ..."), cron job injection
 
   # PostToolUse — content scanning (Read, WebFetch, MCP output)
-  prompt_injection: true    # "ignore previous instructions", fake <system> tags
-  hidden_text: true         # zero-width chars, display:none, font-size:0
+  prompt_injection: true    # "ignore previous instructions", fake <system> tags, DAN jailbreaks
+  hidden_text: true         # zero-width chars, display:none, font-size:0, homoglyphs
+  leetspeak: true           # 1gn0r3 pr3v10us, d1sr3g4rd, j41lbr34k
 
 # ── Allowlists ───────────────────────────────────────────────────────────────
 #
