@@ -1,0 +1,67 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Claude Guard Configuration
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# Place this file next to claude_guard.py (e.g. .claude/hooks/claude_guard_config.yaml).
+# All settings are optional — sensible defaults are built into the script.
+
+# ── Sensitivity ──────────────────────────────────────────────────────────────
+#
+# Controls how aggressively Claude Guard blocks actions:
+#
+#   low    — Only block CRITICAL threats (reverse shells, secret exfiltration,
+#            obfuscated payloads).  Most permissive.
+#   medium — Block CRITICAL + HIGH threats (destructive ops, credential access,
+#            curl|bash, fake system tags).  Good default.
+#   high   — Block CRITICAL + HIGH + MEDIUM threats (suspicious installs,
+#            role hijacking attempts, hidden HTML).  Most restrictive.
+
+sensitivity: medium
+
+# ── Scan Categories ──────────────────────────────────────────────────────────
+#
+# Toggle individual scan categories on/off.  Set to false to disable.
+
+scans:
+  # PreToolUse — Bash command validation
+  exfiltration: true        # curl -d @secret, reverse shells, DNS exfil
+  secret_access: true       # cat ~/.ssh/id_rsa, printenv API_KEY
+  destructive: true         # rm -rf /, git push --force main, DROP TABLE
+  suspicious_install: true  # curl | bash, pip install from URL
+  obfuscation: true         # base64-decode | sh, eval with hex encoding
+
+  # PreToolUse — Write/Edit file validation
+  protected_paths: true     # .ssh/, .env, .aws/credentials, /etc/passwd
+  content_injection: true   # subprocess("curl ..."), cron job injection
+
+  # PostToolUse — content scanning (Read, WebFetch, MCP output)
+  prompt_injection: true    # "ignore previous instructions", fake <system> tags
+  hidden_text: true         # zero-width chars, display:none, font-size:0
+
+# ── Allowlists ───────────────────────────────────────────────────────────────
+#
+# Regex patterns for commands or paths that should never be blocked.
+# If a command/path matches any entry, all checks are skipped for it.
+#
+# Examples:
+#   allowed_commands:
+#     - "curl\\s+https://api\\.mycompany\\.com"
+#     - "curl\\s+http://localhost"
+#
+#   allowed_paths:
+#     - "tests/fixtures/\\.env\\.test"
+#     - "\\.env\\.example$"
+
+allowed_commands: []
+allowed_paths: []
+
+# ── Audit Logging ────────────────────────────────────────────────────────────
+#
+# Claude Guard logs blocked actions and injection warnings to a file.
+# The log auto-rotates by keeping the last half when it exceeds max_size_mb.
+
+logging:
+  enabled: true
+  path: ".claude/hooks/claude_guard.log"
+  log_allowed: false     # set to true to also log allowed actions
+  max_size_mb: 10
